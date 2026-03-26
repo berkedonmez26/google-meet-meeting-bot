@@ -1,6 +1,7 @@
 /* scripts/generate-auth.js
  * Generates auth.json without Playwright codegen UI.
-*/
+ * Uses system Chrome to avoid Google's "insecure browser" blocks.
+ */
 
 const { chromium } = require('playwright');
 const path = require('path');
@@ -16,10 +17,49 @@ const LOGIN_URL =
   '?service=wise&passive=true&continue=https%3A%2F%2Fmeet.google.com%2F';
 
 (async () => {
-  console.log('Launching Chromium (headed) …');
-  const browser  = await chromium.launch({ headless: false });
-  const context  = await browser.newContext();
-  const page     = await context.newPage();
+  console.log('Launching browser for Google sign-in …');
+  let browser;
+  try {
+    // Prefer system Chrome to reduce Google login friction
+    browser = await chromium.launch({
+      channel: 'chrome',
+      headless: false,
+      args: [
+        '--disable-blink-features=AutomationControlled',
+        '--disable-dev-shm-usage',
+        '--no-sandbox',
+        '--disable-features=IsolateOrigins,site-per-process',
+      ],
+    });
+    console.log('✓ Launched system Chrome');
+  } catch (e) {
+    console.warn('⚠ System Chrome not found, falling back to bundled Chromium…');
+    browser = await chromium.launch({
+      headless: false,
+      args: [
+        '--disable-blink-features=AutomationControlled',
+        '--disable-dev-shm-usage',
+        '--no-sandbox',
+        '--disable-features=IsolateOrigins,site-per-process',
+      ],
+    });
+  }
+
+  const context = await browser.newContext({
+    locale: 'en-US',
+    timezoneId: 'America/Los_Angeles',
+    userAgent:
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 13_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+  });
+
+  // Reduce automation fingerprints
+  await context.addInitScript(() => {
+    try {
+      Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+    } catch {}
+  });
+
+  const page = await context.newPage();
 
   console.log('Navigating to Google sign-in …');
   await page.goto(LOGIN_URL);
@@ -29,7 +69,7 @@ const LOGIN_URL =
       await page.fill('input[type="email"]', GOOGLE_ACCOUNT_USER);
       await page.click('button:has-text("Next")');
     } else {
-      console.log('Please type your Google email in the browser and click “Next”…');
+      console.log('Please type your Google email in the browser and click "Next"…');
     }
   }
   await page.waitForSelector('input[type="password"]', { timeout: 0 });
@@ -49,7 +89,7 @@ const LOGIN_URL =
 
   const savePath = path.resolve('auth.json');
   await context.storageState({ path: savePath });
-  console.log(`Saved logged-in session → ${savePath}`);
+  console.log(`✅ Saved logged-in session → ${savePath}`);
 
   await browser.close();
   console.log('Finished. You can now run the bot containers using this auth.json.');
